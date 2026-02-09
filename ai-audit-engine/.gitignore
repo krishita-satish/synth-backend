@@ -1,9 +1,35 @@
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+
+# Environment variables - NEVER commit these!
 .env
 .env.local
-.env.production
-venv/
-.env/
-.idea/
+.env.*.local
+*.key
+secrets.json
+
+# Uploads and output
+uploads/
+output/
+*.pdf
+*.csv
+
+# IDE
 .vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IMPORTANT: Never commit API keys!
+# Always use environment variables
