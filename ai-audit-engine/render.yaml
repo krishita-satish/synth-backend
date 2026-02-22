@@ -9,3 +9,7 @@ services:
         value: 3.11.0
       - key: OPENAI_API_KEY
         sync: false
+      - key: FRONTEND_URL
+        value: https://synth-ai.vercel.app
+      - key: ENVIRONMENT
+        value: production
