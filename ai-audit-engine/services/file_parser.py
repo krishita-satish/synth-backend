@@ -7,8 +7,7 @@ def parse_csv(file_path):
     """Parse CSV file and return list of text content"""
     try:
         df = pd.read_csv(file_path)
-        # Convert all data to strings and flatten
-        return df.astype(str).values.flatten().tolist()
+        return _extract_relevant_text(df)
     except Exception as e:
         print(f"Error parsing CSV: {e}")
         return []
@@ -17,10 +16,46 @@ def parse_excel(file_path):
     """Parse Excel file and return list of text content"""
     try:
         df = pd.read_excel(file_path)
-        return df.astype(str).values.flatten().tolist()
+        return _extract_relevant_text(df)
     except Exception as e:
         print(f"Error parsing Excel: {e}")
         return []
+
+def _extract_relevant_text(df):
+    """Internal helper to identify text columns and extract content"""
+    # Identify text-heavy columns
+    text_cols = []
+    text_keywords = ['message', 'subject', 'description', 'content', 'body', 'text', 'comment', 'review', 'summary', 'details']
+    
+    # First, look for specific keywords in column names
+    for col in df.columns:
+        if any(key in str(col).lower() for key in text_keywords):
+            text_cols.append(col)
+    
+    # If no keywords found, look for columns with long strings
+    if not text_cols:
+        for col in df.columns:
+            # Check if majority of values are strings and have some length
+            sample = df[col].dropna().head(10)
+            if not sample.empty and sample.apply(lambda x: isinstance(x, str) and len(x) > 10).mean() > 0.5:
+                text_cols.append(col)
+                
+    # If still no candidates, fallback to all columns but exclude very short ones (IDs, numbers)
+    if not text_cols:
+        text_cols = [col for col in df.columns if not ('id' in str(col).lower() or 'num' in str(col).lower())]
+
+    if not text_cols:
+        return df.astype(str).values.flatten().tolist()
+
+    # Combine text from relevant columns
+    messages = []
+    for _, row in df[text_cols].iterrows():
+        # Combine non-null values into a single string for that row
+        msg_parts = [str(val).strip() for val in row if pd.notnull(val) and len(str(val).strip()) > 3]
+        if msg_parts:
+            messages.append(" | ".join(msg_parts))
+            
+    return messages
 
 def parse_pdf(file_path):
     """Parse PDF file and return list of text content"""

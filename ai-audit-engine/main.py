@@ -296,19 +296,12 @@ async def login(user_credentials: UserLogin):
 @app.post("/audit")
 async def audit_files(
     files: List[UploadFile] = File(...),
+    industry: str = "general",
 ):
     """
     Main audit endpoint - receives files and returns complete analysis.
-    
-    Security features:
-    - File type validation (extension + content type)
-    - File size limits (10MB per file, 50MB total)
-    - Max 10 files per request
-    - Filename sanitization (prevents path traversal)
-    - Auto-cleanup after processing
-    - Rate limiting (10 requests/minute per IP)
     """
-    # ── Validate file count ─────────────────────────────────────
+    # ... (security checks)
     if len(files) > MAX_FILES_PER_REQUEST:
         raise HTTPException(
             status_code=400,
@@ -326,27 +319,18 @@ async def audit_files(
         total_size = 0
 
         for file in files:
-            # ── Validate each file ──────────────────────────────
+            # ... (validation and saving)
             is_valid, reason = validate_file(file)
             if not is_valid:
                 raise HTTPException(status_code=400, detail=f"File '{file.filename}' rejected: {reason}")
 
-            # Sanitize filename to prevent path traversal
             safe_name = sanitize_filename(file.filename)
             file_path = os.path.join(UPLOAD_FOLDER, safe_name)
 
-            # Ensure file stays within upload folder (extra safety)
-            abs_path = os.path.abspath(file_path)
-            abs_upload = os.path.abspath(UPLOAD_FOLDER)
-            if not abs_path.startswith(abs_upload):
-                raise HTTPException(status_code=400, detail="Invalid file path detected.")
-
-            # Save file
             with open(file_path, "wb") as buffer:
                 shutil.copyfileobj(file.file, buffer)
             saved_paths.append(file_path)
 
-            # Check file size after saving
             size_ok, size_msg = check_file_size(file_path)
             if not size_ok:
                 raise HTTPException(status_code=400, detail=f"File '{file.filename}': {size_msg}")
@@ -366,7 +350,7 @@ async def audit_files(
                 all_messages.extend(messages)
 
                 uploaded_files.append({
-                    "filename": file.filename,  # Original name for display
+                    "filename": file.filename,
                     "content_type": file.content_type,
                     "size": os.path.getsize(file_path),
                     "messages_extracted": len(messages)
@@ -377,15 +361,15 @@ async def audit_files(
                     "filename": file.filename,
                     "content_type": file.content_type,
                     "size": os.path.getsize(file_path),
-                    "error": "File could not be parsed"  # Don't expose internal error details
+                    "error": "File could not be parsed"
                 })
 
         if not all_messages:
             raise HTTPException(status_code=400, detail="No content could be extracted from uploaded files.")
 
         # Run AI classification
-        print(f"🤖 Running AI classification on {len(all_messages)} messages...")
-        category_counts = classify_bulk(all_messages)
+        print(f"🤖 Running AI classification ({industry}) on {len(all_messages)} messages...")
+        category_counts = classify_bulk(all_messages, industry=industry)
 
         # Calculate savings
         total_messages = sum(category_counts.values())
@@ -397,15 +381,27 @@ async def audit_files(
         annual_money_saved = money_saved_monthly * 12
 
         # Automation score
-        automatable_categories = ["Order Status", "Refund/Return", "Payment Issue",
-                                  "Billing Inquiry", "Technical Support", "Account Access",
-                                  "Shipping/Delivery", "Leave Request", "Access/Permissions"]
-        automatable_count = sum(category_counts[cat] for cat in automatable_categories if cat in category_counts)
+        # List of categories that are typically automatable
+        automatable_categories = [
+            # Ecommerce/General
+            "Order Status", "Refund/Return", "Payment Issue", "Shipping/Delivery",
+            "Billing Inquiry", "Technical Support", "Account Access",
+            # HR
+            "Leave Request", "Payroll Query", "Benefits Inquiry",
+            # IT
+            "Access/Permissions", "Password Reset", "Software Issue",
+            # Sales
+            "New Lead", "Demo Request", "Follow-up"
+        ]
+        
+        automatable_count = sum(count for cat, count in category_counts.items() if cat in automatable_categories)
         automation_score = min(int((automatable_count / total_messages * 100)), 100) if total_messages > 0 else 0
 
         # Top opportunities
         top_opportunities = []
         for category, count in category_counts.most_common(5):
+            if category == "Other" and len(category_counts) > 1:
+                continue # Skip "Other" in top ops if we have better ones
             percentage = int((count / total_messages * 100)) if total_messages > 0 else 0
             impact = "High" if percentage > 20 else "Medium" if percentage > 10 else "Low"
             top_opportunities.append({
@@ -416,14 +412,14 @@ async def audit_files(
             })
 
         # AI-powered recommendations
-        print("💡 Generating AI recommendations...")
-        recommendations = generate_recommendations(category_counts, total_messages)
+        print(f"💡 Generating AI recommendations for {industry}...")
+        recommendations = generate_recommendations(category_counts, total_messages, industry=industry)
 
         # Build response
         audit_report = {
             "status": "success",
+            "industry": industry,
             "files_analyzed": len(files),
-            "files": uploaded_files,
             "total_messages_analyzed": total_messages,
             "audit_results": {
                 "time_saved_monthly": f"{hours_saved_monthly:.1f} hours",

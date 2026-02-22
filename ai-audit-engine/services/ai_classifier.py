@@ -84,59 +84,78 @@ INDUSTRY_CATEGORIES = {
 
 
 def _build_system_prompt(industry: str = "general") -> str:
-    """Build a detailed system prompt with few-shot examples for the classifier."""
+    """Build a detailed system prompt with industry-specific context and examples."""
     categories = INDUSTRY_CATEGORIES.get(industry, INDUSTRY_CATEGORIES["general"])
     category_list = "\n".join(f"  - {cat}" for cat in categories)
+    
+    industry_context = f"The dataset is for the {industry.replace('_', ' ').title()} industry."
+    if industry == "general":
+        industry_context = "The dataset covers a wide range of business operations."
 
-    return f"""You are an expert business operations analyst specializing in workflow classification.
+    examples = {
+        "sales": """
+- "I'm interested in your enterprise plan for our 50-person team" -> New Lead
+- "Just checking in if you had a chance to look at the contract" -> Follow-up
+- "We need to see a live demo of the dashboard" -> Demo Request
+- "The proposed price is slightly outside our budget" -> Negotiation""",
+        "it_helpdesk": """
+- "My laptop won't turn on after the update" -> Hardware Issue
+- "I can't access the shared drive since morning" -> Access/Permissions
+- "Is the guest wifi down?" -> Network/Connectivity
+- "Please install Photoshop on my machine" -> Setup/Installation""",
+        "hr_admin": """
+- "When is the deadline for tax declarations?" -> Policy Question
+- "Seeking approval for my October vacation" -> Leave Request
+- "I haven't received my payslip for this month" -> Payroll Query
+- "How do I add my spouse to the health insurance?" -> Benefits Inquiry""",
+    }
+    
+    few_shot = examples.get(industry, """
+- "Where is my order #12345?" -> Order Status
+- "The product arrived damaged" -> Refund/Return
+- "Why was I charged twice?" -> Payment Issue
+- "I'm interested in your services" -> Sales Lead""")
 
-Your task: Classify each business message into EXACTLY ONE category from the list below.
+    return f"""You are a senior business operations analyst. 
+{industry_context}
+
+Your task: Classify each message into EXACTLY ONE category from the list below.
 
 ## Categories
 {category_list}
 
 ## Rules
-1. Choose the SINGLE most relevant category
-2. If a message fits multiple categories, choose the primary intent
-3. Use "Other" only when no category clearly fits
-4. Be consistent — similar messages should get the same category
+1. Choose the SINGLE most relevant category.
+2. If a message fits multiple categories, choose the primary intent.
+3. Use "Other" ONLY when the message is completely irrelevant or junk (noise).
+4. Do not classify noise (like IDs, single numbers, or random fragments) into specific categories; use "Other" for these.
 
-## Few-Shot Examples (General)
-- "Where is my order #12345? It's been 5 days" → Order Status
-- "I want a refund for the damaged item I received" → Refund/Return
-- "My card was charged twice for the same order" → Payment Issue
-- "Hi, I'm interested in your enterprise plan pricing" → Sales Lead
-- "Please send the updated invoice for PO-2024-001" → Vendor Communication
-- "Can I take leave from March 10-15?" → HR/Admin
-- "The checkout page keeps showing an error" → Technical Support
-- "Your service is terrible, I've been waiting 2 weeks" → Customer Complaint
-- "Why was I charged $50 extra this month?" → Billing Inquiry
+## Examples
+{few_shot}
 
 ## Output Format
-Respond with ONLY a valid JSON array. Each element should be an object with:
-- "index": the message number (starting from 0)
-- "category": one of the categories listed above
-- "confidence": a number 0-100 indicating classification confidence
+Respond with ONLY a valid JSON array. Each element must be an object:
+[{{"index": 0, "category": "... category ...", "confidence": 95}}]
 
-Example output:
-[{{"index": 0, "category": "Order Status", "confidence": 95}}, {{"index": 1, "category": "Refund/Return", "confidence": 88}}]
+Example:
+[{{"index": 0, "category": "{categories[0]}", "confidence": 95}}]
 """
 
 
 def classify_batch(messages: list[str], industry: str = "general", batch_size: int = 10) -> Counter:
     """
-    Classify messages in batches to reduce API calls.
-    Instead of 1 API call per message, we send batch_size messages per call.
-    100 messages = 10 API calls instead of 100 (90% cost reduction).
+    Classify messages in batches to reduce API calls and provide industry context.
     """
     counts = Counter()
-    confidence_scores = []
     total = len(messages)
+
+    if not messages:
+        return counts
 
     for i in range(0, total, batch_size):
         batch = messages[i : i + batch_size]
         numbered_messages = "\n".join(
-            f"[Message {j}]: {msg[:1000]}" for j, msg in enumerate(batch)  # truncate long messages
+            f"[Message {j}]: {msg[:800]}" for j, msg in enumerate(batch)
         )
 
         try:
@@ -146,48 +165,68 @@ def classify_batch(messages: list[str], industry: str = "general", batch_size: i
                     {"role": "system", "content": _build_system_prompt(industry)},
                     {"role": "user", "content": f"Classify these {len(batch)} messages:\n\n{numbered_messages}"},
                 ],
-                temperature=0.1,  # low temperature for consistent classification
+                temperature=0.0,
                 max_tokens=2000,
             )
 
             result_text = response.choices[0].message.content.strip()
+            # print(f"DEBUG: AI Response for batch {i//batch_size}:\n{result_text}")
+            
+            # More robust JSON cleanup
+            if "```json" in result_text:
+                result_text = result_text.split("```json")[1].split("```")[0].strip()
+            elif "```" in result_text:
+                result_text = result_text.split("```")[1].split("```")[0].strip()
 
-            # Parse JSON response
-            # Handle cases where model wraps in markdown code block
-            if result_text.startswith("```"):
-                result_text = result_text.split("\n", 1)[1]
-                result_text = result_text.rsplit("```", 1)[0]
+            data = json.loads(result_text)
+            
+            # Identify the list of classifications
+            classifications = []
+            if isinstance(data, list):
+                classifications = data
+            elif isinstance(data, dict):
+                # Look for common keys: 'classifications', 'results', 'data'
+                for key in ['classifications', 'results', 'data', 'items']:
+                    if key in data and isinstance(data[key], list):
+                        classifications = data[key]
+                        break
+                if not classifications:
+                    # Maybe it's an object where values are the items? No, usually it's a list.
+                    # Just take the first list found in values
+                    for val in data.values():
+                        if isinstance(val, list):
+                            classifications = val
+                            break
 
-            classifications = json.loads(result_text)
+            valid_categories = set(INDUSTRY_CATEGORIES.get(industry, INDUSTRY_CATEGORIES["general"]))
 
             for item in classifications:
-                category = item.get("category", "Other")
-                confidence = item.get("confidence", 50)
-
-                # Validate category exists
-                valid_categories = INDUSTRY_CATEGORIES.get(industry, INDUSTRY_CATEGORIES["general"])
-                if category not in valid_categories:
-                    category = "Other"
-
+                raw_category = item.get("category", "Other")
+                category = "Other"
+                
+                # Try exact match
+                if raw_category in valid_categories:
+                    category = raw_category
+                else:
+                    # Try case-insensitive and partial matches
+                    for valid in valid_categories:
+                        if valid.lower() == raw_category.lower() or valid.lower() in raw_category.lower():
+                            category = valid
+                            break
+                
                 counts[category] += 1
-                confidence_scores.append(confidence)
 
-        except (json.JSONDecodeError, KeyError, TypeError) as e:
-            print(f"⚠️ Batch parse error: {e}, falling back to individual classification")
-            # Fallback: classify individually
+        except Exception as e:
+            print(f"Batch parse error: {e}")
             for msg in batch:
                 cat = _classify_single(msg, industry)
                 counts[cat] += 1
-        except Exception as e:
-            print(f"⚠️ API error on batch: {e}")
-            for _ in batch:
-                counts["Other"] += 1
 
     return counts
 
 
 def _classify_single(message: str, industry: str = "general") -> str:
-    """Fallback: classify a single message (used when batch parsing fails)."""
+    """Fallback: classify a single message with industry context."""
     categories = INDUSTRY_CATEGORIES.get(industry, INDUSTRY_CATEGORIES["general"])
     category_list = ", ".join(categories)
 
@@ -197,15 +236,20 @@ def _classify_single(message: str, industry: str = "general") -> str:
             messages=[
                 {
                     "role": "system",
-                    "content": f"Classify this message into ONE category: {category_list}. Reply with ONLY the category name. Do not use 'Other' if a more specific category fits even slightly.",
+                    "content": f"Classify this {industry} sector message into EXACTLY ONE category: {category_list}. Reply with ONLY the category name.",
                 },
                 {"role": "user", "content": message[:1000]},
             ],
-            temperature=0.1,
+            temperature=0.0,
             max_tokens=50,
         )
         result = response.choices[0].message.content.strip()
-        return result if result in categories else "Other"
+        
+        # Match result to categories
+        for cat in categories:
+            if cat.lower() == result.lower() or cat.lower() in result.lower():
+                return cat
+        return "Other"
     except Exception:
         return "Other"
 
