@@ -1,24 +1,24 @@
-import pandas as pd
+"""
+Audit Runner — Orchestrates the audit pipeline.
+Now accepts any file type (not just CSV) and passes structured data to the PDF generator.
+"""
 from services.pdf_report import create_pdf
 
-def run_audit_pipeline(file_path: str):
-    # Load CSV
-    df = pd.read_csv(file_path)
 
-    # Very simple AI-like analysis (we will upgrade later)
-    total_rows = len(df)
-    sample_data = df.head(5).to_string()
-
-    insights = f"""
-    Total Records Analysed: {total_rows}
-
-    Sample Data:
-    {sample_data}
-
-    Key Finding:
-    Large volume of repetitive customer queries detected.
-    High automation potential in customer support workflows.
+def run_audit_pipeline(messages: list, audit_data: dict):
     """
-
-    # Generate PDF report
-    create_pdf(insights)
+    Generate a professional PDF audit report from structured audit data.
+    
+    Args:
+        messages: List of raw message strings that were analyzed
+        audit_data: Dictionary containing:
+            - total_messages: int
+            - category_breakdown: dict
+            - top_opportunities: list
+            - recommendations: list
+            - time_saved_annually: str
+            - cost_reduction_annually: str
+            - automation_score: int
+    """
+    create_pdf(audit_data)
+    print(f"✅ Audit pipeline complete — {audit_data['total_messages']} messages processed")

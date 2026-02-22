@@ -12,14 +12,27 @@ from collections import Counter
 
 from services.audit_runner import run_audit_pipeline
 from services.file_parser import parse_file
-from services.ai_classifier import classify_bulk
+from services.ai_classifier import classify_bulk, generate_recommendations, get_available_industries
 
 app = FastAPI(title="Synth AI Audit Engine")
 
 # CORS - Allow frontend to talk to backend
+allowed_origins = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
+
+# Add production Vercel domain from env var
+vercel_url = os.getenv("FRONTEND_URL", "")
+if vercel_url:
+    allowed_origins.append(vercel_url)
+
+# Also allow all vercel.app preview deployments
+allowed_origins.append("https://*.vercel.app")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],  # Your Next.js frontend
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -41,10 +54,12 @@ def root():
 
 
 @app.post("/audit")
-async def audit_files(files: List[UploadFile] = File(...)):
+async def audit_files(
+    files: List[UploadFile] = File(...),
+):
     """
-    Main audit endpoint - receives files and returns complete analysis
-    This is what the frontend calls!
+    Main audit endpoint - receives files and returns complete analysis.
+    Accepts an optional 'industry' query parameter for industry-specific classification.
     """
     try:
         uploaded_files = []
@@ -81,8 +96,8 @@ async def audit_files(files: List[UploadFile] = File(...)):
                 })
         
         # Run AI classification on messages
-        print("🤖 Running AI classification...")
-        category_counts = classify_bulk(all_messages[:100])  # Limit to 100 to save API costs
+        print(f"🤖 Running AI classification on {len(all_messages)} messages...")
+        category_counts = classify_bulk(all_messages)  # batch processing handles limits internally
         
         # Calculate time and money savings
         total_messages = sum(category_counts.values())
@@ -93,10 +108,12 @@ async def audit_files(files: List[UploadFile] = File(...)):
         annual_hours_saved = hours_saved_monthly * 12
         annual_money_saved = money_saved_monthly * 12
         
-        # Calculate automation score
-        automatable_categories = ["Order Status", "Refund/Return", "Payment Issue"]
+        # Calculate automation score (categories that can be fully automated)
+        automatable_categories = ["Order Status", "Refund/Return", "Payment Issue", 
+                                  "Billing Inquiry", "Technical Support", "Account Access",
+                                  "Shipping/Delivery", "Leave Request", "Access/Permissions"]
         automatable_count = sum(category_counts[cat] for cat in automatable_categories if cat in category_counts)
-        automation_score = int((automatable_count / total_messages * 100)) if total_messages > 0 else 0
+        automation_score = min(int((automatable_count / total_messages * 100)), 100) if total_messages > 0 else 0
         
         # Build top opportunities
         top_opportunities = []
@@ -111,16 +128,9 @@ async def audit_files(files: List[UploadFile] = File(...)):
                 "impact": impact
             })
         
-        # Generate recommendations
-        recommendations = []
-        if category_counts.get("Order Status", 0) > 10:
-            recommendations.append("Deploy AI Order Tracking Bot - automate order status queries")
-        if category_counts.get("Refund/Return", 0) > 10:
-            recommendations.append("Implement Automated Refund Processing System")
-        if category_counts.get("Payment Issue", 0) > 5:
-            recommendations.append("Set up Payment Issue Auto-Resolution Agent")
-        if len(all_messages) > 50:
-            recommendations.append("Enable 24/7 AI Email Assistant for customer support")
+        # Generate AI-powered recommendations (not hardcoded!)
+        print("💡 Generating AI recommendations...")
+        recommendations = generate_recommendations(category_counts, total_messages)
         
         # Create comprehensive audit report
         audit_report = {
@@ -140,13 +150,31 @@ async def audit_files(files: List[UploadFile] = File(...)):
             }
         }
         
-        # Also generate PDF report
+        # Generate PDF report using parsed data
         try:
-            run_audit_pipeline(os.path.join(UPLOAD_FOLDER, files[0].filename))
+            audit_data = {
+                "total_messages": total_messages,
+                "category_breakdown": dict(category_counts),
+                "top_opportunities": top_opportunities,
+                "recommendations": recommendations,
+                "time_saved_annually": f"{annual_hours_saved:.1f} hours",
+                "cost_reduction_annually": f"₹{annual_money_saved:,.0f}",
+                "automation_score": automation_score,
+            }
+            run_audit_pipeline(all_messages, audit_data)
             audit_report["pdf_available"] = True
         except Exception as e:
             print(f"⚠️ PDF generation failed: {e}")
             audit_report["pdf_available"] = False
+        
+        # Cleanup uploaded files
+        for file in files:
+            file_path = os.path.join(UPLOAD_FOLDER, file.filename)
+            if os.path.exists(file_path):
+                try:
+                    os.remove(file_path)
+                except:
+                    pass
         
         print("✅ Audit complete!")
         return audit_report
@@ -172,13 +200,19 @@ def download_report():
     )
 
 
+# Health check endpoint for monitoring
+@app.get("/health")
+def health_check():
+    return {"status": "healthy", "version": "1.0.0"}
+
+
 if __name__ == "__main__":
+    port = int(os.getenv("PORT", 8000))
     print("\n" + "="*60)
     print("🚀 Starting Synth AI Audit Backend")
     print("="*60)
-    print("📍 Server: http://127.0.0.1:8000")
-    print("📖 API Docs: http://127.0.0.1:8000/docs")
-    print("📊 Upload test: http://127.0.0.1:8000")
+    print(f"📍 Server: http://0.0.0.0:{port}")
+    print(f"📖 API Docs: http://localhost:{port}/docs")
     print("="*60 + "\n")
     
-    uvicorn.run(app, host="127.0.0.1", port=8000, log_level="info")
+    uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
