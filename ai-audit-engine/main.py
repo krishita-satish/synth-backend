@@ -19,6 +19,13 @@ from services.audit_runner import run_audit_pipeline
 from services.file_parser import parse_file
 from services.ai_classifier import classify_bulk, generate_recommendations, get_available_industries
 
+import sqlite3
+from pydantic import BaseModel, EmailStr
+from passlib.context import CryptContext
+from jose import JWTError, jwt
+from datetime import datetime, timedelta
+from typing import Optional
+
 
 # ─── Security Configuration ──────────────────────────────────────────
 MAX_FILE_SIZE_MB = 10           # Max size per file (MB)
@@ -27,6 +34,65 @@ MAX_FILES_PER_REQUEST = 10      # Max number of files per audit
 MAX_REQUESTS_PER_MINUTE = 10    # Rate limit per IP
 ALLOWED_EXTENSIONS = {".csv", ".xlsx", ".xls", ".pdf", ".txt", ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".eml"}
 BLOCKED_EXTENSIONS = {".exe", ".bat", ".cmd", ".sh", ".ps1", ".dll", ".so", ".py", ".js", ".php", ".rb", ".jar", ".msi"}
+
+# JWT Configuration
+SECRET_KEY = os.getenv("JWT_SECRET_KEY", "prod_secret_key_synth_ai_2024")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24 hours
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+# ─── Database Setup ──────────────────────────────────────────────────
+DB_PATH = "users.db"
+
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            id TEXT PRIMARY KEY,
+            full_name TEXT,
+            email TEXT UNIQUE,
+            password_hash TEXT,
+            created_at TIMESTAMP
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+init_db()
+
+# ─── Auth Models ─────────────────────────────────────────────────────
+class UserCreate(BaseModel):
+    full_name: str
+    email: EmailStr
+    password: str
+
+class UserLogin(BaseModel):
+    email: EmailStr
+    password: str
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+    user: dict
+
+# ─── Auth Helpers ────────────────────────────────────────────────────
+def get_password_hash(password):
+    return pwd_context.hash(password)
+
+def verify_password(plain_password, hashed_password):
+    return pwd_context.verify(plain_password, hashed_password)
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=15)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
 
 
 # ─── App Setup ────────────────────────────────────────────────────────
@@ -37,6 +103,8 @@ app = FastAPI(
 )
 
 # ─── CORS ─────────────────────────────────────────────────────────────
+# In production, we allow all origins since we use JWT for auth (no cookies)
+# and Vercel uses many dynamic subdomains.
 allowed_origins = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
@@ -46,16 +114,12 @@ vercel_url = os.getenv("FRONTEND_URL", "")
 if vercel_url:
     allowed_origins.append(vercel_url)
 
-# Allow Vercel preview deployments
-allowed_origins.append("https://*.vercel.app")
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=allowed_origins,
-    allow_credentials=True,
-    allow_methods=["GET", "POST"],        # Only methods we actually use
-    allow_headers=["Content-Type", "Authorization"],  # Only headers we need
-    max_age=600,                          # Cache preflight for 10 min
+    allow_origins=["*"], # Allow all origins for the engine
+    allow_credentials=False, # Must be False for allow_origins=["*"]
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # ─── Trusted Hosts (prevent host header attacks) ─────────────────────
@@ -181,6 +245,51 @@ def root():
         "message": "Synth AI Audit Backend Running 🚀",
         "version": "1.0.0"
     }
+
+# ─── Authentication Endpoints ────────────────────────────────────────
+@app.post("/signup", response_model=Token)
+async def signup(user: UserCreate):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    # Check if user exists
+    cursor.execute("SELECT email FROM users WHERE email = ?", (user.email,))
+    if cursor.fetchone():
+        conn.close()
+        raise HTTPException(status_code=400, detail="Email already registered")
+    
+    # Create user
+    user_id = str(uuid.uuid4())
+    hashed_pwd = get_password_hash(user.password)
+    cursor.execute(
+        "INSERT INTO users (id, full_name, email, password_hash, created_at) VALUES (?, ?, ?, ?, ?)",
+        (user_id, user.full_name, user.email, hashed_pwd, datetime.utcnow())
+    )
+    conn.commit()
+    conn.close()
+    
+    # Generate token
+    user_data = {"id": user_id, "email": user.email, "full_name": user.full_name}
+    access_token = create_access_token(data={"sub": user.email})
+    
+    return {"access_token": access_token, "token_type": "bearer", "user": user_data}
+
+@app.post("/login", response_model=Token)
+async def login(user_credentials: UserLogin):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT id, full_name, email, password_hash FROM users WHERE email = ?", (user_credentials.email,))
+    db_user = cursor.fetchone()
+    conn.close()
+    
+    if not db_user or not verify_password(user_credentials.password, db_user[3]):
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    
+    user_data = {"id": db_user[0], "full_name": db_user[1], "email": db_user[2]}
+    access_token = create_access_token(data={"sub": db_user[2]})
+    
+    return {"access_token": access_token, "token_type": "bearer", "user": user_data}
 
 
 @app.post("/audit")

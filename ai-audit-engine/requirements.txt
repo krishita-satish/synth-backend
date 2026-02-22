@@ -18,6 +18,11 @@ Pillow==10.4.0
 # OpenAI
 openai==1.54.0
 
+# Authentication
+passlib[bcrypt]==1.7.4
+python-jose[cryptography]==3.3.0
+python-multipart==0.0.17
+
 # Other utilities
 python-dateutil==2.9.0
 python-dotenv==1.0.0
