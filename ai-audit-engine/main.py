@@ -243,7 +243,8 @@ def root():
     return {
         "status": "running",
         "message": "Synth AI Audit Backend Running 🚀",
-        "version": "1.0.0"
+        "version": "1.0.0",
+        "openai_key_set": bool(os.getenv("OPENAI_API_KEY"))
     }
 
 # ─── Authentication Endpoints ────────────────────────────────────────
