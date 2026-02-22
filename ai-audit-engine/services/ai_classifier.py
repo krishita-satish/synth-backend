@@ -136,7 +136,7 @@ def classify_batch(messages: list[str], industry: str = "general", batch_size: i
     for i in range(0, total, batch_size):
         batch = messages[i : i + batch_size]
         numbered_messages = "\n".join(
-            f"[Message {j}]: {msg[:500]}" for j, msg in enumerate(batch)  # truncate long messages
+            f"[Message {j}]: {msg[:1000]}" for j, msg in enumerate(batch)  # truncate long messages
         )
 
         try:
@@ -192,14 +192,14 @@ def _classify_single(message: str, industry: str = "general") -> str:
     category_list = ", ".join(categories)
 
     try:
-        response = client.chat.completions.create(
+        response = _get_client().chat.completions.create(
             model="gpt-4o-mini",
             messages=[
                 {
                     "role": "system",
-                    "content": f"Classify this message into ONE category: {category_list}. Reply with ONLY the category name.",
+                    "content": f"Classify this message into ONE category: {category_list}. Reply with ONLY the category name. Do not use 'Other' if a more specific category fits even slightly.",
                 },
-                {"role": "user", "content": message[:500]},
+                {"role": "user", "content": message[:1000]},
             ],
             temperature=0.1,
             max_tokens=50,
@@ -240,7 +240,7 @@ def generate_recommendations(category_counts: Counter, total_messages: int, indu
     )
 
     try:
-        response = client.chat.completions.create(
+        response = _get_client().chat.completions.create(
             model="gpt-4o-mini",
             messages=[
                 {

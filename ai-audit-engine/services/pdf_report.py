@@ -169,15 +169,17 @@ def create_pdf(audit_data: dict, output_path: str = None):
         ],
     ]
     
-    metrics_table = Table(metrics_data, colWidths=[1.2 * inch] * 4)
+    metrics_table = Table(metrics_data, colWidths=[1.4 * inch] * 4)
     metrics_table.setStyle(TableStyle([
         ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
         ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
         ('BACKGROUND', (0, 0), (-1, -1), LIGHT_BG),
         ('BOX', (0, 0), (-1, -1), 1, colors.HexColor('#E5E7EB')),
         ('INNERGRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#E5E7EB')),
-        ('TOPPADDING', (0, 0), (-1, 0), 12),
-        ('BOTTOMPADDING', (0, -1), (-1, -1), 12),
+        ('TOPPADDING', (0, 0), (-1, 0), 18),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
+        ('TOPPADDING', (0, 1), (-1, 1), 8),
+        ('BOTTOMPADDING', (0, 1), (-1, 1), 18),
     ]))
     story.append(metrics_table)
     story.append(Spacer(1, 0.3 * inch))
